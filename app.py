@@ -34,13 +34,15 @@ def load_data():
         # THE ULTIMATE CLEANER: Strip edges, remove newlines, AND crush multiple/weird spaces into one
         clean_df.columns = clean_df.columns.str.replace('\n', '', regex=False).str.replace(r'\s+', ' ', regex=True).str.strip()
         
-        set_dataframe(clean_df)
         return clean_df
     except Exception as e:
         st.error(f"Failed to load dataset at {data_path}. Error: {e}")
         return None
 
 df = load_data()
+
+if df is not None:
+    set_dataframe(df)
 
 if df is not None:
     with st.sidebar:
