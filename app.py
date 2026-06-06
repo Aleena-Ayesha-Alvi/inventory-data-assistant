@@ -80,17 +80,15 @@ if prompt := st.chat_input("Ask a question about the inventory data..."):
                 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
                 
                 # --- API CALL 1: Planning & Coding ---
-                # Dynamically extract the cleaned columns
                 columns = ", ".join(df.columns.tolist())
-                
                 system_instruction = f"""You are a precise data assistant. 
                 Available DataFrame 'df' columns: [{columns}]
                 
                 CRITICAL RULES:
                 1. Answer definition questions in 'definition_answer'.
-                2. Write pandas code into 'pandas_code' based ONLY on the exact columns provided above.
+                2. Write pandas code into 'pandas_code' based ONLY on exact columns.
                 3. Your code MUST start with 'result = '.
-                4. Use standard pandas methods (e.g., result = df['Product ID'].nunique()).
+                4. If you need to return multiple values (e.g., a name and a max value), assign them as a list to a single result variable. Example: result = [df.groupby('Product Category')['Hand-In-Stock'].sum().idxmax(), df.groupby('Product Category')['Hand-In-Stock'].sum().max()]
                 5. DO NOT use markdown, backticks (```), or any formatting. Pure text code only."""
                 
                 structured_llm = llm.with_structured_output(AgentPlan)
@@ -99,26 +97,34 @@ if prompt := st.chat_input("Ask a question about the inventory data..."):
                 # --- LOCAL EXECUTION: Sandbox ---
                 data_result = ""
                 if plan.pandas_code and plan.pandas_code.strip():
-                    # TELEMETRY: Print exactly what Groq wrote
-                    st.info(f"💻 Agent generated code: `{plan.pandas_code}`")
-                    
-                    tool_output = query_dataset.invoke({"pandas_code": plan.pandas_code})
-                    data_result = str(tool_output)
-                    
-                    # TELEMETRY: Print exactly what the Sandbox returned
-                    if "Error" in data_result:
-                        st.error(f"🛡️ Sandbox rejected execution: {data_result}")
-                    else:
-                        st.success(f"🛡️ Sandbox execution successful: {data_result}")
+                    with st.expander("🛠️ View Agent Execution Logs"):
+                        st.markdown("**Generated Pandas Code:**")
+                        st.code(plan.pandas_code, language="python")
+                        
+                        tool_output = query_dataset.invoke({"pandas_code": plan.pandas_code})
+                        data_result = str(tool_output)
+                        
+                        st.markdown("**Sandbox Execution Result:**")
+                        if "Error" in data_result:
+                            st.error(data_result)
+                        else:
+                            st.success(data_result)
                 
                 # --- API CALL 2: Synthesis ---
+                synthesis_system = """You are a strict Data Synthesis Agent. 
+                CRITICAL RULE: If the user's original question is about general trivia, politics, people, or anything outside the scope of inventory data, hardware, or data analysis, you MUST refuse to answer. 
+                Reply EXACTLY with: 'I am an Inventory Data Assistant. I am restricted to answering questions related to the provided inventory dataset.'"""
+                
                 synthesis_prompt = f"""User asked: {prompt}
                 Definition context found: {plan.definition_answer}
                 Data computation result: {data_result}
                 
-                Combine this information into a clean, direct, human-readable final answer. Do not show the pandas code."""
+                If the query is valid, combine the information into a clean, direct, human-readable final answer. Do not show the pandas code."""
                 
-                final_response = llm.invoke([HumanMessage(content=synthesis_prompt)])
+                final_response = llm.invoke([
+                    SystemMessage(content=synthesis_system), 
+                    HumanMessage(content=synthesis_prompt)
+                ])
                 final_answer = final_response.content
 
                 # Render and save
