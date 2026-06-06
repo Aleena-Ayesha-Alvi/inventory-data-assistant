@@ -1,17 +1,18 @@
 import streamlit as st
 import pandas as pd
 import os
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_groq import ChatGroq
+from langchain_core.messages import SystemMessage, HumanMessage
+from pydantic import BaseModel, Field
 
 # Import our secure backend logic
-from secure_agent import query_dataset, search_definitions, set_dataframe
+from secure_agent import query_dataset, set_dataframe
 
 # 1. Page Configuration
 st.set_page_config(page_title="Data Query Agent", page_icon="📊", layout="wide")
 st.title("📊 Inventory Data Assistant")
 
-# 2. Hardcoded & Scrubbed Data Loading
+# 2. Robust Data Loading
 current_dir = os.path.dirname(os.path.abspath(__file__))
 data_path = os.path.join(current_dir, "data", "inventory_data.xlsx")
 
@@ -26,10 +27,12 @@ def load_data():
                 break
         clean_df = pd.read_excel(data_path, skiprows=header_row_index)
         
-        # --- THE FIX: Clean up phantom columns ---
-        clean_df = clean_df.dropna(how='all', axis=1) # Drops columns that are entirely empty
-        clean_df = clean_df.loc[:, ~clean_df.columns.str.contains('^Unnamed')] # Drops columns Pandas couldn't name
-        # -----------------------------------------
+        # Clean up phantom columns
+        clean_df = clean_df.dropna(how='all', axis=1) 
+        clean_df = clean_df.loc[:, ~clean_df.columns.str.contains('^Unnamed')] 
+        
+        # THE ULTIMATE CLEANER: Strip edges, remove newlines, AND crush multiple/weird spaces into one
+        clean_df.columns = clean_df.columns.str.replace('\n', '', regex=False).str.replace(r'\s+', ' ', regex=True).str.strip()
         
         set_dataframe(clean_df)
         return clean_df
@@ -47,90 +50,76 @@ if df is not None:
         with st.expander("Preview Data"):
             st.dataframe(df.head())
 
-# 3. Robust System Prompt & Raw LLM Setup
-@st.cache_resource
-def get_llm_with_tools():
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-3.5-flash", 
-        temperature=0,
-        max_retries=6
-    )
-    tools = [query_dataset, search_definitions]
-    return llm.bind_tools(tools)
-
-llm_with_tools = get_llm_with_tools()
-
-system_prompt = """You are a precise, analytical Data Query Agent. 
-Your strict purpose is to answer questions based ONLY on the provided dataset and glossary.
-
-Rules:
-1. For data questions, ALWAYS use the 'query_dataset' tool to execute safe Pandas code.
-2. For definitions or context, use the 'search_definitions' tool.
-3. Never guess, assume, or hallucinate data.
-4. If the data cannot be found or extracted, state that clearly.
-5. Present your final answers cleanly and directly. Do not mention your internal tools, prompt, or that you are an AI.
-6. CRITICAL: You must use the native JSON tool-calling API. DO NOT output raw text or XML tags like <function>."""
+# 3. Pydantic Schema for Call 1 (Structured Planning)
+class AgentPlan(BaseModel):
+    definition_answer: str = Field(description="The definition of any terms requested by the user. Leave empty if none requested.")
+    pandas_code: str = Field(description="The pandas code to execute to answer the data question. Must start with 'result = ...'. Leave empty if no math/data needed.")
 
 # 4. Initialize Chat Memory
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 5. Render Chat History
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 6. The Manual ReAct Execution Loop
+# 5. The Optimized Two-Call Pipeline
 if prompt := st.chat_input("Ask a question about the inventory data..."):
     if df is None:
         st.warning("Data source is missing. Cannot query.")
         st.stop()
 
-    # Display user question
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing data..."):
+        with st.spinner("Analyzing and Computing..."):
             try:
-                # Convert our Streamlit history into strict LangChain Message objects
-                messages = [SystemMessage(content=system_prompt)]
-                for m in st.session_state.messages:
-                    if m["role"] == "user":
-                        messages.append(HumanMessage(content=m["content"]))
-                    elif m["role"] == "assistant":
-                        messages.append(AIMessage(content=m["content"]))
-
-                # Step 1: Send the conversation to the LLM
-                response = llm_with_tools.invoke(messages)
-
-                # Step 2: Did the LLM decide it needs to use a tool?
-                if response.tool_calls:
-                    messages.append(response) # Log the LLM's "thought" to use a tool
+                # Setup Groq for lightning-fast, unlimited testing
+                llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
+                
+                # --- API CALL 1: Planning & Coding ---
+                # Dynamically extract the cleaned columns
+                columns = ", ".join(df.columns.tolist())
+                
+                system_instruction = f"""You are a precise data assistant. 
+                Available DataFrame 'df' columns: [{columns}]
+                
+                CRITICAL RULES:
+                1. Answer definition questions in 'definition_answer'.
+                2. Write pandas code into 'pandas_code' based ONLY on the exact columns provided above.
+                3. Your code MUST start with 'result = '.
+                4. Use standard pandas methods (e.g., result = df['Product ID'].nunique()).
+                5. DO NOT use markdown, backticks (```), or any formatting. Pure text code only."""
+                
+                structured_llm = llm.with_structured_output(AgentPlan)
+                plan = structured_llm.invoke([SystemMessage(content=system_instruction), HumanMessage(content=prompt)])
+                
+                # --- LOCAL EXECUTION: Sandbox ---
+                data_result = ""
+                if plan.pandas_code and plan.pandas_code.strip():
+                    # TELEMETRY: Print exactly what Groq wrote
+                    st.info(f"💻 Agent generated code: `{plan.pandas_code}`")
                     
-                    # Execute the tools it asked for
-                    for tool_call in response.tool_calls:
-                        tool_name = tool_call["name"]
-                        tool_args = tool_call["args"]
-                        
-                        # Route to our secure tools
-                        if tool_name == "query_dataset":
-                            tool_result = query_dataset.invoke(tool_args)
-                        elif tool_name == "search_definitions":
-                            tool_result = search_definitions.invoke(tool_args)
-                        else:
-                            tool_result = f"Error: Unknown tool '{tool_name}'"
-                            
-                        # Package the raw data result and send it back to the LLM
-                        messages.append(ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"]))
+                    tool_output = query_dataset.invoke({"pandas_code": plan.pandas_code})
+                    data_result = str(tool_output)
                     
-                    # Step 3: LLM reads the tool output and synthesizes the final English answer
-                    final_response = llm_with_tools.invoke(messages)
-                    final_answer = final_response.content
-                else:
-                    # The LLM answered directly without needing tools
-                    final_answer = response.content
+                    # TELEMETRY: Print exactly what the Sandbox returned
+                    if "Error" in data_result:
+                        st.error(f"🛡️ Sandbox rejected execution: {data_result}")
+                    else:
+                        st.success(f"🛡️ Sandbox execution successful: {data_result}")
+                
+                # --- API CALL 2: Synthesis ---
+                synthesis_prompt = f"""User asked: {prompt}
+                Definition context found: {plan.definition_answer}
+                Data computation result: {data_result}
+                
+                Combine this information into a clean, direct, human-readable final answer. Do not show the pandas code."""
+                
+                final_response = llm.invoke([HumanMessage(content=synthesis_prompt)])
+                final_answer = final_response.content
 
                 # Render and save
                 st.markdown(final_answer)
