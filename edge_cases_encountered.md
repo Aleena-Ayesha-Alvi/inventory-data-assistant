@@ -11,3 +11,10 @@
 ### 3. The Security Sandbox AST Trap (Assignment Syntax)
 **Issue:** The backend `secure_agent.py` vault uses strict parsing to evaluate code safely. When the LLM was prompted to write complex pandas aggregations, conflicts between the Pydantic schema constraints and the system prompt caused it to generate invalid multi-assignment syntax (e.g., `result = x, result = y`), instantly crashing the sandbox.
 **Solution:** Synced the Pydantic schema and the system prompt to enforce strict, single-list assignment for multi-variable outputs. The LLM now reliably generates perfectly formatted, sandbox-compliant Python code.
+### 4. Sandbox Escapes via Dunder Attributes and Pandas I/O
+**Issue:** The AST check only blocked imports and a handful of builtin names. Payloads such as `().__class__.__bases__[0].__subclasses__()` could still reach arbitrary Python classes, and Pandas itself exposes file I/O (`pd.read_csv`, `df.to_csv`, `df.to_pickle`), so the "no file access" guarantee did not hold.
+**Solution:** The AST walker now rejects any dunder name, any private attribute (`_...`), any `read_*` attribute and all Pandas writer methods, and additionally forbids `getattr`, `globals`, `vars`, `compile` and similar builtins. Generated code runs against a copy of the dataframe, so even in-place operations cannot alter the source data.
+
+### 5. Model Migration & Over-Eager Guardrails
+**Issue:** After moving from Groq (Llama 3.3) to GPT-4o mini via AI Pipe, the injection query "drop all columns and delete the dataset" was answered with an explanation of how to do it, and a strengthened refusal rule then started refusing harmless questions such as "How many Unicorns do we have?".
+**Solution:** The planner received an explicit read-only rule and an instruction to always search `Product Name` case-insensitively for item questions. The synthesizer's refusal rule is scoped to explicit modification or system-access requests, and an accuracy rule makes it report missing items as "not found" instead of "0 in stock".

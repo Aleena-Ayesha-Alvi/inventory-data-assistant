@@ -1,15 +1,28 @@
-import os
 import pandas as pd
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
-from langchain_core.prompts import ChatPromptTemplate
 import ast
-
-load_dotenv()
 
 # Global variable to hold the dataframe once loaded in the app
 _df_context = None
+
+FORBIDDEN_CALLS = {
+    "__import__", "open", "eval", "exec", "compile", "exit", "quit",
+    "getattr", "setattr", "delattr", "globals", "locals", "vars", "input", "breakpoint"
+}
+
+# Pandas methods/objects that read or write files, or evaluate strings as code
+FORBIDDEN_ATTRIBUTES = {
+    "to_csv", "to_excel", "to_pickle", "to_parquet", "to_json", "to_hdf", "to_sql",
+    "to_feather", "to_stata", "to_html", "to_latex", "to_clipboard", "to_xml",
+    "to_markdown", "to_orc", "ExcelWriter", "HDFStore", "io", "eval"
+}
+
+SAFE_BUILTINS = {
+    "print": print, "len": len, "max": max, "min": min, "sum": sum, "abs": abs,
+    "round": round, "sorted": sorted, "int": int, "float": float, "str": str,
+    "bool": bool, "list": list, "dict": dict, "tuple": tuple, "set": set,
+    "range": range, "zip": zip, "enumerate": enumerate, "any": any, "all": all
+}
 
 def set_dataframe(df):
     global _df_context
@@ -37,15 +50,22 @@ def safe_pandas_eval(code_str: str) -> str:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 return "Security Exception: Imports are prohibited in this sandbox."
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id in ['__import__', 'open', 'eval', 'exec', 'exit', 'quit']:
+                if node.func.id in FORBIDDEN_CALLS:
                     return f"Security Exception: Call to forbidden function '{node.func.id}'."
+            # Dunder access (e.g. ().__class__.__subclasses__()) is the classic sandbox escape
+            if isinstance(node, ast.Name) and node.id.startswith("__"):
+                return f"Security Exception: Access to '{node.id}' is prohibited."
+            if isinstance(node, ast.Attribute):
+                if node.attr.startswith("_"):
+                    return f"Security Exception: Access to private attribute '{node.attr}' is prohibited."
+                # Pandas I/O (pd.read_csv, df.to_csv, ...) would give file system access
+                if node.attr.startswith("read_") or node.attr in FORBIDDEN_ATTRIBUTES:
+                    return f"Security Exception: File/system operation '{node.attr}' is prohibited."
 
-        # Compile and execute within a highly restricted context
-        local_vars = {"df": _df_context, "pd": pd}
-        global_vars = {"__builtins__": {
-            "print": print, "len": len, "max": max, "min": min, "int": int, 
-            "float": float, "str": str, "list": list, "dict": dict, "range": range
-        }}
+        # Compile and execute within a highly restricted context.
+        # The dataframe is copied so generated code can never mutate the source data.
+        local_vars = {"df": _df_context.copy(), "pd": pd}
+        global_vars = {"__builtins__": SAFE_BUILTINS}
         
         # Divert stdout to capture execution outputs if any, or evaluate expression
         exec(compile(tree, filename="<llm_sandbox>", mode="exec"), global_vars, local_vars)
@@ -67,22 +87,3 @@ def query_dataset(pandas_code: str) -> str:
     Example: result = df['Quantity'].sum()
     """
     return safe_pandas_eval(pandas_code)
-
-@tool
-def search_definitions(term: str) -> str:
-    """
-    Searches the corporate metadata and glossary for definitions of specific inventory terms.
-    """
-    # Placeholder definitions for inventory context; can be expanded or hooked to duckduckgo
-    glossary = {
-        "sku": "Stock Keeping Unit - a unique identifier for each distinct product.",
-        "reorder point": "The minimum inventory level at which new stock must be ordered.",
-        "safety stock": "Surplus inventory held to protect against supply chain shortages."
-    }
-    return glossary.get(term.lower(), f"No direct glossary match found for '{term}'. Processing general lookup...")
-
-def get_data_agent():
-    # Bind our secure tools to the model
-    llm = ChatOpenAI(model="gpt-4o", temperature=0)
-    tools = [query_dataset, search_definitions]
-    return llm.bind_tools(tools)
