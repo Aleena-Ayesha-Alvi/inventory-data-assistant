@@ -6,7 +6,7 @@ The application allows users to interact with an inventory dataset using natural
 
 ## 🚀 Live Demo
 
-_Add your Streamlit Cloud URL here after deploying (see [Deploy to Streamlit Cloud](#-deploy-to-streamlit-cloud))._
+https://inventory-data-assistant-fgswhtmtj2vwyk2rw5osv6.streamlit.app/
 
 ---
 
