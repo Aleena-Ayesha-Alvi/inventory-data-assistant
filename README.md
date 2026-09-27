@@ -145,11 +145,3 @@ streamlit run app.py
 The QA protocol covers standard lookups, multi-step maths, hallucination traps, prompt-injection attacks, off-topic questions, and direct sandbox-escape payloads sent straight to the sandbox (all blocked). See [QA_testing_protocol.md](QA_testing_protocol.md) for every query, the generated code and the result, and [edge_cases_encountered.md](edge_cases_encountered.md) for the engineering decisions behind them.
 
 ---
-
-## Author
-
-**Priyanshu Agarwal**
-
-IIT Madras BS in Data Science and Applications
-
-DesiCrew Data Science Assessment Submission
